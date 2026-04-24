@@ -983,11 +983,9 @@ You should avoid adding columns that do not have a clear use later in the workfl
 
 ## 12. What to look up while building the scripts
 
-A beginner is unlikely to remember every function in advance. That is normal.
-
 These are the main topics you will probably need to look up.
 
-### Basic file I/O
+### Basic file input and output
 - `readr::read_csv()`
 - `readr::write_csv()`
 - `saveRDS()`
@@ -1020,8 +1018,6 @@ These are the main topics you will probably need to look up.
 - `paste0()`
 - `file.path()`
 
-You do not need to become an expert in all of these before starting. The important thing is to know what each one is being used for in the script.
-
 ## 13. Recommended order of work for you
 
 You should not try to write everything at once.
@@ -1045,7 +1041,7 @@ Remove any temporary loop cap, run the full PDF stage, and save both the PDF res
 
 This order matters because each file depends on the previous one.
 
-## 14. Checks that should be done after each file
+## 14. Checks that can be done after each file
 
 ### After step 01
 - Did the script read the file correctly?
@@ -1065,48 +1061,3 @@ This order matters because each file depends on the previous one.
 - How many files were downloaded successfully?
 - Does the final table contain the new PDF result columns?
 
-## 15. Common mistakes to watch for
-
-### Using the wrong join key
-This is one of the easiest ways to get a table full of missing values after a join.
-
-### Filtering using the wrong case or spelling
-For example, filtering for `"include"` when the actual value is `"Include"`.
-
-### Forgetting to inspect the data before filtering
-This often leads to unnecessary fallback logic.
-
-### Saving files with inconsistent names
-If step 02 expects `included_studies.rds` but step 01 wrote `included_records.rds`, the workflow becomes harder to follow.
-
-### Mixing too many tasks into one block
-If you write a large block that reads, filters, mutates, joins, and saves all at once, debugging becomes difficult.
-
-## 16. What a good final result should look like
-
-By the end of this workflow, the repository should produce:
-
-1. A clean included-studies file.
-2. A DOI-enriched included-studies file.
-3. A PDF results file.
-4. A final study table that includes both identifier and PDF status columns.
-
-The scripts should be simple enough that a new R user can read them in order and understand:
-- what goes in
-- what happens to it
-- what comes out
-- why each step is necessary
-
-## 17. Summary of the teaching goal
-
-You should come away from this exercise understanding a small number of core ideas well.
-
-- How to read a file into R.
-- How to inspect columns and values before filtering.
-- How to filter rows using one explicit condition.
-- How to use a helper function to get a prepared data frame.
-- How to join one table onto another using a known key.
-- How to create a small result table inside a loop.
-- How to save processed outputs clearly.
-
-That is a strong enough foundation for this repository. The code does not need to be highly abstract or highly defensive to teach those skills well.
