@@ -135,21 +135,103 @@ for (i in which(is.na(additional$doi) | !nzchar(additional$doi))) {
   }
 }
 
+# Crossref is also used for journal/year fields and publisher-hosted PDF links.
+# We retain the source URLs in the audit output even if a publisher rejects an
+# automated download, rather than treating absence from OpenAlex as proof that
+# no open-access PDF exists.
+crossref_metadata_by_doi <- function(doi) {
+  empty <- list(journal_name = NA_character_, year = NA_character_, pdf_urls = character(0))
+  if (is.na(doi) || !nzchar(doi)) return(empty)
+  work <- get_json_with_retry(paste0("https://api.crossref.org/works/", utils::URLencode(doi, reserved = TRUE)))
+  message <- work$message %||% NULL
+  if (is.null(message)) return(empty)
+
+  journal <- message$`container-title` %||% message$container_title %||% character(0)
+  journal <- if (length(journal) > 0) as.character(journal[[1]]) else NA_character_
+  year <- NA_character_
+  for (field in c("published-print", "published-online", "issued", "created")) {
+    value <- message[[field]]
+    if (!is.null(value)) {
+      numbers <- unlist(value, use.names = FALSE)
+      candidate <- suppressWarnings(as.integer(numbers[[1]]))
+      if (!is.na(candidate) && candidate > 1000 && candidate < 3000) {
+        year <- as.character(candidate)
+        break
+      }
+    }
+  }
+
+  links <- message$link %||% NULL
+  urls <- character(0)
+  if (is.data.frame(links) && "URL" %in% names(links)) urls <- as.character(links$URL)
+  if (is.list(links) && !is.data.frame(links)) {
+    urls <- unlist(lapply(links, function(x) x$URL %||% x$url %||% character(0)), use.names = FALSE)
+  }
+  list(journal_name = journal, year = year, pdf_urls = unique(urls[!is.na(urls) & nzchar(urls)]))
+}
+
+metadata <- lapply(additional$doi, crossref_metadata_by_doi)
+additional$journal_name <- vapply(metadata, `[[`, character(1), "journal_name")
+additional$year <- vapply(metadata, `[[`, character(1), "year")
+additional$crossref_pdf_urls <- lapply(metadata, `[[`, "pdf_urls")
+
+query_unpaywall_pdf_urls <- function(doi) {
+  if (is.na(doi) || !nzchar(doi)) return(character(0))
+  email <- Sys.getenv("UNPAYWALL_EMAIL", unset = "oj.watson92@gmail.com")
+  result <- get_json_with_retry(paste0(
+    "https://api.unpaywall.org/v2/", utils::URLencode(doi, reserved = TRUE),
+    "?email=", utils::URLencode(email, reserved = TRUE)
+  ))
+  if (is.null(result)) return(character(0))
+  locations <- result$oa_locations %||% list()
+  urls <- c(result$best_oa_location$url_for_pdf %||% character(0))
+  if (is.data.frame(locations) && "url_for_pdf" %in% names(locations)) urls <- c(urls, locations$url_for_pdf)
+  if (is.list(locations) && !is.data.frame(locations)) {
+    urls <- c(urls, unlist(lapply(locations, function(x) x$url_for_pdf %||% character(0)), use.names = FALSE))
+  }
+  unique(as.character(urls[!is.na(urls) & nzchar(urls)]))
+}
+
+download_candidate_pdf <- function(url, destination) {
+  if (is.na(url) || !nzchar(url)) return(list(found = FALSE, detail = "empty URL"))
+  request <- httr2::request(url) |>
+    httr2::req_user_agent("mortality-crisis-endnote-compendium/0.1") |>
+    httr2::req_headers(Accept = "application/pdf") |>
+    httr2::req_timeout(12)
+  response <- tryCatch(httr2::req_perform(request), error = function(e) e)
+  if (inherits(response, "error")) return(list(found = FALSE, detail = conditionMessage(response)))
+  content_type <- httr2::resp_header(response, "content-type") %||% ""
+  body <- httr2::resp_body_raw(response)
+  is_pdf <- length(body) >= 4 && identical(rawToChar(body[1:4]), "%PDF")
+  if (httr2::resp_status(response) >= 200 && httr2::resp_status(response) < 300 &&
+      (grepl("application/pdf|application/octet-stream", content_type, ignore.case = TRUE) || is_pdf) && is_pdf) {
+    writeBin(body, destination)
+    return(list(found = TRUE, detail = paste0("HTTP ", httr2::resp_status(response))))
+  }
+  list(found = FALSE, detail = paste0("HTTP ", httr2::resp_status(response), "; ", content_type))
+}
+
 record_id <- if ("record_index" %in% names(additional)) as.character(additional$record_index) else as.character(seq_len(nrow(additional)))
 pdf_results <- vector("list", nrow(additional))
 for (i in seq_len(nrow(additional))) {
   doi <- additional$doi[[i]]
   destination <- file.path(pdf_dir, paste0(record_id[[i]], ".pdf"))
-  urls <- if (is.na(doi) || !nzchar(doi)) character() else unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi)))
+  publisher_urls <- additional$crossref_pdf_urls[[i]] %||% character(0)
+  unpaywall_urls <- query_unpaywall_pdf_urls(doi)
+  oa_urls <- if (is.na(doi) || !nzchar(doi)) character() else unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi)))
+  urls <- unique(c(publisher_urls, unpaywall_urls, oa_urls))
   found <- file.exists(destination)
   used_url <- if (found) NA_character_ else NA_character_
   used_source <- if (found) "already_downloaded" else NA_character_
+  attempted <- character(0)
   if (download_pdfs && !found) {
     for (url in urls) {
-      if (download_pdf_with_retry(url, destination)) {
+      attempt <- download_candidate_pdf(url, destination)
+      attempted <- c(attempted, paste0(url, " [", attempt$detail, "]"))
+      if (attempt$found) {
         found <- TRUE
         used_url <- url
-        used_source <- "OpenAlex/Europe PMC"
+        used_source <- if (url %in% publisher_urls) "Crossref publisher link" else if (url %in% unpaywall_urls) "Unpaywall OA link" else "OpenAlex/Europe PMC"
         break
       }
     }
@@ -157,8 +239,32 @@ for (i in seq_len(nrow(additional))) {
   pdf_results[[i]] <- data.frame(
     record_index = record_id[[i]], pdf_found = found, pdf_source = used_source,
     pdf_url = used_url, pdf_path = if (found) destination else NA_character_,
+    pdf_access_status = if (found) "Downloaded" else if (length(urls) > 0) "OA/publisher URL found; download needs follow-up" else "No OA/publisher PDF URL found",
+    pdf_urls_checked = paste(urls, collapse = " | "), pdf_attempt_log = paste(attempted, collapse = " | "),
     stringsAsFactors = FALSE
   )
+}
+
+make_study_rows <- function(candidates, sheet_columns) {
+  # sheet_append is positional. Construct all source-sheet columns in the
+  # source order, leaving reviewer fields blank, so no values can shift.
+  rows <- as.data.frame(
+    setNames(replicate(length(sheet_columns), rep(NA_character_, nrow(candidates)), simplify = FALSE), sheet_columns),
+    check.names = FALSE, stringsAsFactors = FALSE
+  )
+  put <- function(column, value) {
+    if (column %in% names(rows)) rows[[column]] <<- as.character(value)
+  }
+  put("record_index", candidates$record_index)
+  put("rec_number", candidates$rec_number)
+  put("title", candidates$title)
+  put("journal_name", candidates$journal_name)
+  put("year", candidates$year)
+  put("abstract", candidates$abstract)
+  put("doi", candidates$doi)
+  put("pdf_found", candidates$pdf_found)
+  put("screening_status", ifelse(candidates$pdf_found, "PDF found – review link", candidates$pdf_access_status))
+  rows
 }
 
 additional <- additional |>
@@ -201,16 +307,32 @@ if (sheet_mode == "copy") {
   review_url <- paste0("https://docs.google.com/spreadsheets/d/", copied_id)
   audit_tab <- "HRP correction candidates"
   sheet_add(copied_id, audit_tab)
+
+  # Upload PDFs only to a dedicated folder owned by this review run, never to
+  # the production sheet's PDF folder. These links are then placed in both
+  # legacy PDF-link columns used by the existing studies tab.
+  additional$pdf_drive_link <- NA_character_
+  found_paths <- which(additional$pdf_found & !is.na(additional$pdf_path) & file.exists(additional$pdf_path))
+  if (length(found_paths) > 0) {
+    folder <- drive_mkdir(paste0("HRP correction review PDFs - ", format(Sys.time(), "%Y-%m-%d %H%M")))
+    folder_id <- as.character(folder$id)
+    for (i in found_paths) {
+      uploaded <- drive_upload(additional$pdf_path[[i]], path = as_id(folder_id), name = basename(additional$pdf_path[[i]]), type = "application/pdf")
+      additional$pdf_drive_link[[i]] <- paste0("https://drive.google.com/file/d/", as.character(uploaded$id), "/view")
+    }
+  }
   sheet_write(additional, ss = copied_id, sheet = audit_tab)
 
   tabs <- sheet_properties(copied_id)$name
   if ("studies" %in% tabs) {
     existing <- read_sheet(copied_id, sheet = "studies")
-    shared <- intersect(names(existing), names(additional))
-    if ("record_index" %in% shared) {
+    if ("record_index" %in% names(existing)) {
       new_rows <- additional |> filter(!.data$record_index %in% as.character(existing$record_index))
       if (nrow(new_rows) > 0) {
-        append_rows <- new_rows[, shared, drop = FALSE]
+        append_rows <- make_study_rows(new_rows, names(existing))
+        for (pdf_column in intersect(c("pdf_link...9", "pdf_link...10"), names(append_rows))) {
+          append_rows[[pdf_column]] <- new_rows$pdf_drive_link
+        }
         sheet_append(copied_id, data = append_rows, sheet = "studies")
       }
     }
