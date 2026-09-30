@@ -2,3 +2,9 @@
 .Rhistory
 .RData
 .Ruserdata
+*.pdf
+.DS_Store
+archive/data-raw/
+analysis/data-raw/
+analysis/pdf_download/
+analysis/hrp_correction_review/
