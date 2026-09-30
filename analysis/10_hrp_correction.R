@@ -203,11 +203,13 @@ crossref_metadata_by_doi <- function(doi) {
 metadata <- lapply(additional$doi, crossref_metadata_by_doi)
 crossref_journal_name <- vapply(metadata, `[[`, character(1), "journal_name")
 crossref_year <- vapply(metadata, `[[`, character(1), "year")
-# Do not blank bibliographic metadata merely because a DOI service has no
-# record for a meeting abstract. Prefer Crossref when available, otherwise
-# retain the exact EndNote library value.
-additional$journal_name <- dplyr::coalesce(crossref_journal_name, additional$endnote_journal_name)
-additional$year <- dplyr::coalesce(crossref_year, additional$endnote_year)
+# EndNote is the bibliographic source used by this review. Prefer its exact
+# journal/year values, then fall back to Crossref where the library is blank.
+# Keep Crossref's values separately in the audit output for traceability.
+additional$crossref_journal_name <- crossref_journal_name
+additional$crossref_year <- crossref_year
+additional$journal_name <- dplyr::coalesce(additional$endnote_journal_name, crossref_journal_name)
+additional$year <- dplyr::coalesce(additional$endnote_year, crossref_year)
 additional$crossref_pdf_urls <- lapply(metadata, `[[`, "pdf_urls")
 
 query_unpaywall_pdf_urls <- function(doi) {
