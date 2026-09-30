@@ -92,7 +92,36 @@ normalise_title <- function(x) {
 additional$doi <- NA_character_
 additional$doi_source <- NA_character_
 if (file.exists(endnote_path) && file.info(endnote_path)$size > 0) {
-  refs <- read_endnote_refs(endnote_path)
+  # The screening export preserves the originating EndNote record number in
+  # `rec_number`. Query those exact records directly instead of loading the
+  # whole (835 MB) library merely to enrich a small correction set.
+  requested_ids <- unique(as.character(additional$rec_number))
+  requested_ids <- requested_ids[!is.na(requested_ids) & grepl("^[0-9]+$", requested_ids)]
+  endnote_con <- DBI::dbConnect(RSQLite::SQLite(), endnote_path)
+  on.exit(DBI::dbDisconnect(endnote_con), add = TRUE)
+  if (length(requested_ids) > 0) {
+    id_sql <- paste(requested_ids, collapse = ",")
+    refs <- DBI::dbGetQuery(endnote_con, paste0("SELECT * FROM refs WHERE id IN (", id_sql, ")"))
+  } else {
+    refs <- read_endnote_refs(endnote_path)
+  }
+  refs$id <- as.character(refs$id)
+  # Preserve the complete bibliographic fields held in the full EndNote
+  # library.  These are authoritative for this review and remain useful when
+  # Crossref/OpenAlex cannot resolve a conference abstract or supplement DOI.
+  endnote_metadata <- refs |>
+    transmute(
+      endnote_id = as.character(.data$id),
+      title_key = normalise_title(.data$title),
+      endnote_journal_name = as.character(.data$secondary_title),
+      endnote_year = as.character(.data$year),
+      endnote_url = as.character(.data$url),
+      endnote_accession_number = as.character(.data$accession_number),
+      endnote_notes = as.character(.data$notes),
+      endnote_reference_type = as.character(.data$reference_type)
+    ) |>
+    filter(!is.na(.data$title_key), nzchar(.data$title_key)) |>
+    distinct(.data$title_key, .keep_all = TRUE)
   doi_lookup <- extract_endnote_dois(refs) |>
     mutate(title_key = normalise_title(.data$title)) |>
     filter(!is.na(.data$title_key), nzchar(.data$title_key)) |>
@@ -100,6 +129,7 @@ if (file.exists(endnote_path) && file.info(endnote_path)$size > 0) {
   additional <- additional |>
     mutate(title_key = normalise_title(.data$title)) |>
     left_join(doi_lookup |> select(title_key, endnote_doi = doi), by = "title_key") |>
+    left_join(endnote_metadata, by = "title_key") |>
     mutate(
       doi = .data$endnote_doi,
       doi_source = if_else(!is.na(.data$endnote_doi), "EndNote title match", NA_character_)
@@ -171,8 +201,13 @@ crossref_metadata_by_doi <- function(doi) {
 }
 
 metadata <- lapply(additional$doi, crossref_metadata_by_doi)
-additional$journal_name <- vapply(metadata, `[[`, character(1), "journal_name")
-additional$year <- vapply(metadata, `[[`, character(1), "year")
+crossref_journal_name <- vapply(metadata, `[[`, character(1), "journal_name")
+crossref_year <- vapply(metadata, `[[`, character(1), "year")
+# Do not blank bibliographic metadata merely because a DOI service has no
+# record for a meeting abstract. Prefer Crossref when available, otherwise
+# retain the exact EndNote library value.
+additional$journal_name <- dplyr::coalesce(crossref_journal_name, additional$endnote_journal_name)
+additional$year <- dplyr::coalesce(crossref_year, additional$endnote_year)
 additional$crossref_pdf_urls <- lapply(metadata, `[[`, "pdf_urls")
 
 query_unpaywall_pdf_urls <- function(doi) {
@@ -219,7 +254,8 @@ for (i in seq_len(nrow(additional))) {
   publisher_urls <- additional$crossref_pdf_urls[[i]] %||% character(0)
   unpaywall_urls <- query_unpaywall_pdf_urls(doi)
   oa_urls <- if (is.na(doi) || !nzchar(doi)) character() else unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi)))
-  urls <- unique(c(publisher_urls, unpaywall_urls, oa_urls))
+  endnote_urls <- additional$endnote_url[[i]] %||% character(0)
+  urls <- unique(c(publisher_urls, unpaywall_urls, oa_urls, endnote_urls))
   found <- file.exists(destination)
   used_url <- if (found) NA_character_ else NA_character_
   used_source <- if (found) "already_downloaded" else NA_character_
@@ -239,7 +275,7 @@ for (i in seq_len(nrow(additional))) {
   pdf_results[[i]] <- data.frame(
     record_index = record_id[[i]], pdf_found = found, pdf_source = used_source,
     pdf_url = used_url, pdf_path = if (found) destination else NA_character_,
-    pdf_access_status = if (found) "Downloaded" else if (length(urls) > 0) "OA/publisher URL found; download needs follow-up" else "No OA/publisher PDF URL found",
+    pdf_access_status = if (found) "Downloaded" else if (length(urls) > 0) "OA/publisher/EndNote URL found; download needs follow-up" else "No OA/publisher/EndNote PDF URL found",
     pdf_urls_checked = paste(urls, collapse = " | "), pdf_attempt_log = paste(attempted, collapse = " | "),
     stringsAsFactors = FALSE
   )
