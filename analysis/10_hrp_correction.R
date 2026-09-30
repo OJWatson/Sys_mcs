@@ -110,23 +110,21 @@ if (file.exists(endnote_path) && file.info(endnote_path)$size > 0) {
 doi_by_title <- function(title) {
   if (is.na(title) || !nzchar(trimws(title))) return(NA_character_)
   query <- utils::URLencode(title, reserved = TRUE)
-  response <- get_json_with_retry(paste0("https://api.openalex.org/works?per-page=10&search=", query))
-  if (!is.null(response) && !is.null(response$results) && is.data.frame(response$results) && "display_name" %in% names(response$results)) {
-    exact <- response$results[normalise_title(response$results$display_name) == normalise_title(title), , drop = FALSE]
-    if (nrow(exact) > 0 && "doi" %in% names(exact) && !is.na(exact$doi[[1]])) {
-      return(sub("^https?://doi.org/", "", tolower(exact$doi[[1]])))
-    }
-  }
-
-  # OpenAlex may be temporarily unavailable; Crossref gives an independent
-  # exact-title fallback without silently accepting a fuzzy match.
+  # Crossref is checked first because OpenAlex can be intermittently
+  # unavailable. Both paths accept exact normalized-title matches only.
   crossref <- get_json_with_retry(paste0("https://api.crossref.org/works?rows=10&query.title=", query))
   items <- crossref$message$items %||% NULL
-  if (is.null(items) || !is.data.frame(items) || !"title" %in% names(items) || !"DOI" %in% names(items)) return(NA_character_)
-  item_titles <- vapply(items$title, function(x) if (length(x) == 0) "" else x[[1]], character(1))
-  exact <- items[normalise_title(item_titles) == normalise_title(title), , drop = FALSE]
-  if (nrow(exact) == 0 || is.na(exact$DOI[[1]]) || !nzchar(exact$DOI[[1]])) return(NA_character_)
-  tolower(exact$DOI[[1]])
+  if (!is.null(items) && is.data.frame(items) && "title" %in% names(items) && "DOI" %in% names(items)) {
+    item_titles <- vapply(items$title, function(x) if (length(x) == 0) "" else x[[1]], character(1))
+    exact <- items[normalise_title(item_titles) == normalise_title(title), , drop = FALSE]
+    if (nrow(exact) > 0 && !is.na(exact$DOI[[1]]) && nzchar(exact$DOI[[1]])) return(tolower(exact$DOI[[1]]))
+  }
+
+  response <- get_json_with_retry(paste0("https://api.openalex.org/works?per-page=10&search=", query))
+  if (is.null(response) || is.null(response$results) || !is.data.frame(response$results) || !"display_name" %in% names(response$results)) return(NA_character_)
+  exact <- response$results[normalise_title(response$results$display_name) == normalise_title(title), , drop = FALSE]
+  if (nrow(exact) == 0 || !"doi" %in% names(exact) || is.na(exact$doi[[1]])) return(NA_character_)
+  sub("^https?://doi.org/", "", tolower(exact$doi[[1]]))
 }
 
 for (i in which(is.na(additional$doi) | !nzchar(additional$doi))) {
@@ -181,8 +179,25 @@ if (sheet_mode == "copy") {
   suppressPackageStartupMessages({ library(googledrive); library(googlesheets4) })
   drive_auth()
   gs4_auth()
-  copied <- drive_cp(as_id(live_sheet_id), name = paste0("HRP correction review copy - ", format(Sys.time(), "%Y-%m-%d %H%M")))
-  copied_id <- as.character(copied$id)
+  copy_name <- paste0("HRP correction review copy - ", format(Sys.time(), "%Y-%m-%d %H%M"))
+  copied <- tryCatch(
+    drive_cp(as_id(live_sheet_id), name = copy_name),
+    error = function(e) NULL
+  )
+  if (is.null(copied)) {
+    # Some shared sheets allow reading but disallow Drive's native copy action.
+    # In that case make an owned value-level clone of every existing tab. This
+    # is still review-only and leaves the source spreadsheet unchanged.
+    source_tabs <- sheet_properties(live_sheet_id)$name
+    source_values <- lapply(source_tabs, function(tab) read_sheet(live_sheet_id, sheet = tab))
+    names(source_values) <- source_tabs
+    copied <- gs4_create(name = copy_name, sheets = source_values)
+  }
+  copied_id <- if (is.atomic(copied) && length(copied) == 1) {
+    as.character(copied)
+  } else {
+    as.character(copied$id)
+  }
   review_url <- paste0("https://docs.google.com/spreadsheets/d/", copied_id)
   audit_tab <- "HRP correction candidates"
   sheet_add(copied_id, audit_tab)
