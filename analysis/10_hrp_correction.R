@@ -256,8 +256,9 @@ for (i in seq_len(nrow(additional))) {
   publisher_urls <- additional$crossref_pdf_urls[[i]] %||% character(0)
   unpaywall_urls <- query_unpaywall_pdf_urls(doi)
   oa_urls <- if (is.na(doi) || !nzchar(doi)) character() else unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi)))
+  title_oa_urls <- query_openalex_title_pdf_urls(additional$title[[i]])
   endnote_urls <- additional$endnote_url[[i]] %||% character(0)
-  urls <- unique(c(publisher_urls, unpaywall_urls, oa_urls, endnote_urls))
+  urls <- unique(c(publisher_urls, unpaywall_urls, oa_urls, title_oa_urls, endnote_urls))
   found <- file.exists(destination)
   used_url <- if (found) NA_character_ else NA_character_
   used_source <- if (found) "already_downloaded" else NA_character_
@@ -269,7 +270,7 @@ for (i in seq_len(nrow(additional))) {
       if (attempt$found) {
         found <- TRUE
         used_url <- url
-        used_source <- if (url %in% publisher_urls) "Crossref publisher link" else if (url %in% unpaywall_urls) "Unpaywall OA link" else "OpenAlex/Europe PMC"
+        used_source <- if (url %in% publisher_urls) "Crossref publisher link" else if (url %in% unpaywall_urls) "Unpaywall OA link" else if (url %in% title_oa_urls) "OpenAlex exact-title OA link" else "OpenAlex/Europe PMC"
         break
       }
     }

@@ -50,6 +50,27 @@ query_openalex_pdf_urls <- function(doi) {
   urls
 }
 
+# Conference abstracts can share a generic DOI or have incomplete DOI metadata.
+# Search by exact normalized title as a fallback, accepting locations only from
+# the exact bibliographic match rather than a fuzzy search hit.
+query_openalex_title_pdf_urls <- function(title) {
+  if (is.na(title) || !nzchar(trimws(title))) return(character(0))
+  key <- function(x) tolower(gsub("[^a-z0-9]", "", as.character(x)))
+  url <- paste0(
+    "https://api.openalex.org/works?per-page=25&search=",
+    utils::URLencode(title, reserved = TRUE)
+  )
+  result <- get_json_with_retry(url)
+  works <- result$results
+  if (is.null(works) || !is.data.frame(works) || !"display_name" %in% names(works)) return(character(0))
+  works <- works[key(works$display_name) == key(title), , drop = FALSE]
+  if (nrow(works) == 0) return(character(0))
+  urls <- c(works$primary_location[[1]]$pdf_url, works$best_oa_location[[1]]$pdf_url)
+  locations <- works$locations[[1]]
+  if (is.data.frame(locations) && "pdf_url" %in% names(locations)) urls <- c(urls, locations$pdf_url)
+  unique(urls[!is.na(urls) & nzchar(urls)])
+}
+
 query_europepmc_pdf_urls <- function(doi) {
   query <- utils::URLencode(paste0('DOI:"', doi, '"'), reserved = TRUE)
   url <- paste0(
@@ -132,4 +153,3 @@ download_pdf_with_retry <- function(url, dest_path, tries = 3, wait_seconds = 2)
 
   FALSE
 }
-
