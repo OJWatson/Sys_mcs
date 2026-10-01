@@ -23,6 +23,7 @@ download_pdfs <- tolower(Sys.getenv("DOWNLOAD_PDFS", "true")) %in% c("true", "1"
 review_dir <- "analysis/hrp_correction_review"
 pdf_dir <- file.path(review_dir, "pdfs")
 manual_urls_path <- "analysis/data-raw/hrp_correction_manual_oa_urls.csv"
+drive_pdf_folder_id <- Sys.getenv("PDF_DRIVE_FOLDER_ID", "")
 dir.create(pdf_dir, recursive = TRUE, showWarnings = FALSE)
 
 if (!destination_mode %in% c("review", "live", "local")) stop("DESTINATION_MODE must be review, live, or local.")
@@ -82,15 +83,36 @@ manual_urls <- if (file.exists(manual_urls_path)) {
     transmute(record_index = as.character(record_index), manual_url = pdf_url, manual_source = pdf_source)
 } else tibble(record_index = character(), manual_url = character(), manual_source = character())
 
+# The no-DOI recovery workflow and this script share this Drive folder.
+# Set PDF_DRIVE_FOLDER_ID to avoid the name lookup when running non-interactively.
+drive_pdf_folder <- NULL
+if (download_pdfs) {
+  suppressPackageStartupMessages(library(googledrive))
+  drive_auth()
+  if (nzchar(drive_pdf_folder_id)) {
+    drive_pdf_folder <- as_id(drive_pdf_folder_id)
+  } else {
+    parent <- drive_find(pattern = "^Causes_of_Mortality_Review$", type = "folder")
+    drive_pdf_folder <- drive_ls(parent) |> filter(name == "Retrieved_PDFs")
+  }
+}
+
+download_drive_pdf <- function(path) {
+  if (is.null(drive_pdf_folder)) return(FALSE)
+  file <- drive_ls(drive_pdf_folder) |> filter(name == basename(path))
+  if (nrow(file) == 0) return(FALSE)
+  tryCatch({ drive_download(file[1, ], path = path, overwrite = TRUE); file.exists(path) }, error = function(e) FALSE)
+}
+
 pdf_results <- lapply(seq_len(nrow(additional)), function(i) {
   record_id <- additional$record_index[[i]]
   pdf_path <- file.path(pdf_dir, paste0(record_id, ".pdf"))
   manual <- filter(manual_urls, record_index == record_id)
   urls <- c(manual$manual_url, query_openalex_pdf_urls(additional$doi[[i]]), query_europepmc_pdf_urls(additional$doi[[i]]))
   urls <- unique(urls[!is.na(urls) & nzchar(urls)])
-  found <- file.exists(pdf_path)
+  found <- file.exists(pdf_path) || download_drive_pdf(pdf_path)
   used_url <- if (found && nrow(manual) > 0) manual$manual_url[[1]] else NA_character_
-  source <- if (found && nrow(manual) > 0) manual$manual_source[[1]] else if (found) "already_downloaded" else NA_character_
+  source <- if (found && nrow(manual) > 0) manual$manual_source[[1]] else if (found) "Drive PDF folder" else NA_character_
 
   if (!found && download_pdfs) for (url in urls) {
     if (download_pdf_with_retry(url, pdf_path)) {
