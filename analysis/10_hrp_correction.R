@@ -260,17 +260,19 @@ pdf_results <- vector("list", nrow(additional))
 for (i in seq_len(nrow(additional))) {
   doi <- additional$doi[[i]]
   destination <- file.path(pdf_dir, paste0(record_id[[i]], ".pdf"))
-  publisher_urls <- additional$crossref_pdf_urls[[i]] %||% character(0)
-  unpaywall_urls <- query_unpaywall_pdf_urls(doi)
-  oa_urls <- if (is.na(doi) || !nzchar(doi)) character() else unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi)))
-  title_oa_urls <- query_openalex_title_pdf_urls(additional$title[[i]])
-  endnote_urls <- additional$endnote_url[[i]] %||% character(0)
+  found <- file.exists(destination)
   manual <- manual_oa_urls[manual_oa_urls$record_index == record_id[[i]], , drop = FALSE]
   manual_urls <- as.character(manual$pdf_url %||% character(0))
+  publisher_urls <- additional$crossref_pdf_urls[[i]] %||% character(0)
+  endnote_urls <- additional$endnote_url[[i]] %||% character(0)
+  # Already available PDFs are not re-queried or re-downloaded on subsequent
+  # runs. This makes manual additions and incremental retries fast and safe.
+  unpaywall_urls <- if (!found && download_pdfs) query_unpaywall_pdf_urls(doi) else character(0)
+  oa_urls <- if (!found && download_pdfs && !is.na(doi) && nzchar(doi)) unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi))) else character(0)
+  title_oa_urls <- if (!found && download_pdfs) query_openalex_title_pdf_urls(additional$title[[i]]) else character(0)
   urls <- unique(c(manual_urls, publisher_urls, unpaywall_urls, oa_urls, title_oa_urls, endnote_urls))
-  found <- file.exists(destination)
-  used_url <- if (found) NA_character_ else NA_character_
-  used_source <- if (found) "already_downloaded" else NA_character_
+  used_url <- if (found && length(manual_urls) > 0) manual_urls[[1]] else NA_character_
+  used_source <- if (found && nrow(manual) > 0) as.character(manual$pdf_source[[1]]) else if (found) "already_downloaded" else NA_character_
   attempted <- character(0)
   if (download_pdfs && !found) {
     for (url in urls) {
