@@ -65,7 +65,15 @@ query_openalex_title_pdf_urls <- function(title) {
   if (is.null(works) || !is.data.frame(works) || !"display_name" %in% names(works)) return(character(0))
   works <- works[key(works$display_name) == key(title), , drop = FALSE]
   if (nrow(works) == 0) return(character(0))
-  urls <- c(works$primary_location[[1]]$pdf_url, works$best_oa_location[[1]]$pdf_url)
+  location_pdf_url <- function(location) {
+    if (is.null(location) || length(location) == 0 || (is.atomic(location) && all(is.na(location)))) return(character(0))
+    if (is.data.frame(location) && "pdf_url" %in% names(location)) return(as.character(location$pdf_url))
+    if (is.list(location) && "pdf_url" %in% names(location)) return(as.character(location$pdf_url))
+    character(0)
+  }
+  primary <- if ("primary_location" %in% names(works)) works$primary_location[[1]] else NULL
+  best <- if ("best_oa_location" %in% names(works)) works$best_oa_location[[1]] else NULL
+  urls <- c(location_pdf_url(primary), location_pdf_url(best))
   locations <- works$locations[[1]]
   if (is.data.frame(locations) && "pdf_url" %in% names(locations)) urls <- c(urls, locations$pdf_url)
   unique(urls[!is.na(urls) & nzchar(urls)])
