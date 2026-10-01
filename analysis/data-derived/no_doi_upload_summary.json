@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-10-01T15:44:46+0100",
+  "manifest": "/home/kana/.openclaw/workspace/repos/Sys_mcs/analysis/data-derived/no_doi_pdf_manifest.csv",
+  "valid_local_pdfs": 395,
+  "allow_drive_upload": false,
+  "allow_sheet_update": false,
+  "allow_share_anyone": false,
+  "drive_manifest_rows": 395,
+  "drive_manifest": "/home/kana/.openclaw/workspace/repos/Sys_mcs/analysis/data-derived/no_doi_drive_manifest.csv",
+  "sheet_preview_rows": 521,
+  "sheet_preview": "/home/kana/.openclaw/workspace/repos/Sys_mcs/analysis/data-derived/no_doi_sheet_update_preview.csv",
+  "sheet_action": "dry_run"
+}
+
