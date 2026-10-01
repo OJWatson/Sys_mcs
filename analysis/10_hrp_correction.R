@@ -34,6 +34,7 @@ sheet_mode <- tolower(Sys.getenv("SHEET_MODE", unset = "local"))
 download_pdfs <- tolower(Sys.getenv("DOWNLOAD_PDFS", unset = "true")) %in% c("true", "1", "yes")
 review_dir <- "analysis/hrp_correction_review"
 pdf_dir <- file.path(review_dir, "pdfs")
+manual_oa_urls_path <- "analysis/data-raw/hrp_correction_manual_oa_urls.csv"
 
 dir.create(review_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(pdf_dir, recursive = TRUE, showWarnings = FALSE)
@@ -249,6 +250,12 @@ download_candidate_pdf <- function(url, destination) {
 }
 
 record_id <- if ("record_index" %in% names(additional)) as.character(additional$record_index) else as.character(seq_len(nrow(additional)))
+manual_oa_urls <- if (file.exists(manual_oa_urls_path)) {
+  readr::read_csv(manual_oa_urls_path, show_col_types = FALSE) |>
+    mutate(record_index = as.character(.data$record_index))
+} else {
+  data.frame(record_index = character(), pdf_url = character(), pdf_source = character())
+}
 pdf_results <- vector("list", nrow(additional))
 for (i in seq_len(nrow(additional))) {
   doi <- additional$doi[[i]]
@@ -258,7 +265,9 @@ for (i in seq_len(nrow(additional))) {
   oa_urls <- if (is.na(doi) || !nzchar(doi)) character() else unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi)))
   title_oa_urls <- query_openalex_title_pdf_urls(additional$title[[i]])
   endnote_urls <- additional$endnote_url[[i]] %||% character(0)
-  urls <- unique(c(publisher_urls, unpaywall_urls, oa_urls, title_oa_urls, endnote_urls))
+  manual <- manual_oa_urls[manual_oa_urls$record_index == record_id[[i]], , drop = FALSE]
+  manual_urls <- as.character(manual$pdf_url %||% character(0))
+  urls <- unique(c(manual_urls, publisher_urls, unpaywall_urls, oa_urls, title_oa_urls, endnote_urls))
   found <- file.exists(destination)
   used_url <- if (found) NA_character_ else NA_character_
   used_source <- if (found) "already_downloaded" else NA_character_
@@ -270,7 +279,7 @@ for (i in seq_len(nrow(additional))) {
       if (attempt$found) {
         found <- TRUE
         used_url <- url
-        used_source <- if (url %in% publisher_urls) "Crossref publisher link" else if (url %in% unpaywall_urls) "Unpaywall OA link" else if (url %in% title_oa_urls) "OpenAlex exact-title OA link" else "OpenAlex/Europe PMC"
+        used_source <- if (url %in% manual_urls) as.character(manual$pdf_source[[which(manual$pdf_url == url)[[1]]]]) else if (url %in% publisher_urls) "Crossref publisher link" else if (url %in% unpaywall_urls) "Unpaywall OA link" else if (url %in% title_oa_urls) "OpenAlex exact-title OA link" else "OpenAlex/Europe PMC"
         break
       }
     }
