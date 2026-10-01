@@ -23,7 +23,7 @@ download_pdfs <- tolower(Sys.getenv("DOWNLOAD_PDFS", "true")) %in% c("true", "1"
 review_dir <- "analysis/hrp_correction_review"
 pdf_dir <- file.path(review_dir, "pdfs")
 manual_urls_path <- "analysis/data-raw/hrp_correction_manual_oa_urls.csv"
-drive_pdf_folder_id <- Sys.getenv("PDF_DRIVE_FOLDER_ID", "1C7ufZYeYVyvzULW7zisp_PKlEYUyqYIU")
+drive_pdf_folder_id <- Sys.getenv("PDF_DRIVE_FOLDER_ID", "1m03L684qekbvcQQlKE40_6KIJjdoQDO4")
 dir.create(pdf_dir, recursive = TRUE, showWarnings = FALSE)
 
 if (!destination_mode %in% c("review", "live", "local")) stop("DESTINATION_MODE must be review, live, or local.")
