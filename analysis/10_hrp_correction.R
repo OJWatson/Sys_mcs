@@ -1,18 +1,10 @@
-# Step 10: HRP-country correction review
+# Step 10: HRP-country correction
+# Adds Djibouti and Gambia to the HRP list, then keeps records for which I1 is
+# the only failed rule. Default destination is a review-sheet copy plus a new
+# Drive PDF folder. Set DESTINATION_MODE=live to append to production instead.
 #
-# Counterfactual: treat Djibouti and Gambia as HRP countries. A record becomes
-# an additional inclusion only when I1 is its sole failed rule: decision is
-# Exclude, I1 is fail, and I2/E1/E2/E3/E4 are all pass.
-#
-# The script always writes local review files. With SHEET_MODE=copy it copies
-# the live review sheet, appends only new candidates to the copy, adds a full
-# audit tab, and never writes to the source spreadsheet.
-#
-# Example:
-# SCREENING_CSV=/path/to/first_149064_completed_screening_records.csv \
-# ENDNOTE_ENL_PATH=/path/to/'Mortality in Crisis.enl' \
-# LIVE_SHEET_ID=<source-sheet-id> SHEET_MODE=copy \
-# Rscript analysis/10_hrp_correction.R
+# Review (default): LIVE_SHEET_ID=<id> ENDNOTE_ENL_PATH=<path> Rscript analysis/10_hrp_correction.R
+# Production:       LIVE_SHEET_ID=<id> DESTINATION_MODE=live Rscript analysis/10_hrp_correction.R
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -30,11 +22,20 @@ source("R/pdf_helpers.R")
 screening_csv <- Sys.getenv("SCREENING_CSV", unset = "analysis/data-raw/screening_data.csv")
 endnote_path <- Sys.getenv("ENDNOTE_ENL_PATH", unset = "analysis/data-raw/Mortality in Crisis.enl")
 live_sheet_id <- Sys.getenv("LIVE_SHEET_ID", unset = "")
-sheet_mode <- tolower(Sys.getenv("SHEET_MODE", unset = "local"))
+destination_mode <- tolower(Sys.getenv(
+  "DESTINATION_MODE",
+  unset = Sys.getenv("SHEET_MODE", unset = "review") # SHEET_MODE retained for older commands.
+))
+destination_mode <- dplyr::recode(destination_mode, copy = "review")
+if (!destination_mode %in% c("review", "live", "local")) {
+  stop("DESTINATION_MODE must be review (default), live, or local.")
+}
 download_pdfs <- tolower(Sys.getenv("DOWNLOAD_PDFS", unset = "true")) %in% c("true", "1", "yes")
 review_dir <- "analysis/hrp_correction_review"
 pdf_dir <- file.path(review_dir, "pdfs")
 manual_oa_urls_path <- "analysis/data-raw/hrp_correction_manual_oa_urls.csv"
+live_pdf_parent_name <- Sys.getenv("LIVE_PDF_PARENT", unset = "Causes_of_Mortality_Review")
+live_pdf_folder_name <- Sys.getenv("LIVE_PDF_FOLDER", unset = "Retrieved_PDFs")
 
 dir.create(review_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(pdf_dir, recursive = TRUE, showWarnings = FALSE)
@@ -326,56 +327,57 @@ local_rds <- file.path(review_dir, "additional_hrp_correction_studies.rds")
 write_csv(additional, local_csv)
 saveRDS(additional, local_rds)
 
-# The Google write path is intentionally opt-in and copy-only. It adds records
-# to the copied `studies` tab when its standard columns are available, and it
-# always creates a complete audit tab in the copy.
+# Google destinations ---------------------------------------------------------
+# review: copy source sheet + create a new PDF folder (default)
+# live:   append source sheet + use Causes_of_Mortality_Review/Retrieved_PDFs
 review_url <- NA_character_
-if (sheet_mode == "copy") {
-  if (!nzchar(live_sheet_id)) stop("SHEET_MODE=copy requires LIVE_SHEET_ID; refusing to guess a source sheet.")
+if (destination_mode != "local") {
+  if (!nzchar(live_sheet_id)) stop("LIVE_SHEET_ID is required unless DESTINATION_MODE=local.")
   suppressPackageStartupMessages({ library(googledrive); library(googlesheets4) })
   drive_auth()
   gs4_auth()
-  copy_name <- paste0("HRP correction review copy - ", format(Sys.time(), "%Y-%m-%d %H%M"))
-  copied <- tryCatch(
-    drive_cp(as_id(live_sheet_id), name = copy_name),
-    error = function(e) NULL
-  )
-  if (is.null(copied)) {
-    # Some shared sheets allow reading but disallow Drive's native copy action.
-    # In that case make an owned value-level clone of every existing tab. This
-    # is still review-only and leaves the source spreadsheet unchanged.
-    source_tabs <- sheet_properties(live_sheet_id)$name
-    source_values <- lapply(source_tabs, function(tab) read_sheet(live_sheet_id, sheet = tab))
-    names(source_values) <- source_tabs
-    copied <- gs4_create(name = copy_name, sheets = source_values)
+  target_sheet_id <- live_sheet_id
+  if (destination_mode == "review") {
+    copy_name <- paste0("HRP correction review - ", format(Sys.time(), "%Y-%m-%d %H%M"))
+    copied <- tryCatch(drive_cp(as_id(live_sheet_id), name = copy_name), error = function(e) NULL)
+    if (is.null(copied)) {
+      source_tabs <- sheet_properties(live_sheet_id)$name
+      source_values <- lapply(source_tabs, function(tab) read_sheet(live_sheet_id, sheet = tab))
+      names(source_values) <- source_tabs
+      copied <- gs4_create(name = copy_name, sheets = source_values)
+    }
+    target_sheet_id <- if (is.atomic(copied) && length(copied) == 1) as.character(copied) else as.character(copied$id)
   }
-  copied_id <- if (is.atomic(copied) && length(copied) == 1) {
-    as.character(copied)
-  } else {
-    as.character(copied$id)
-  }
-  review_url <- paste0("https://docs.google.com/spreadsheets/d/", copied_id)
+  review_url <- paste0("https://docs.google.com/spreadsheets/d/", target_sheet_id)
   audit_tab <- "HRP correction candidates"
-  sheet_add(copied_id, audit_tab)
+  if (!audit_tab %in% sheet_properties(target_sheet_id)$name) sheet_add(target_sheet_id, audit_tab)
 
-  # Upload PDFs only to a dedicated folder owned by this review run, never to
-  # the production sheet's PDF folder. These links are then placed in both
-  # legacy PDF-link columns used by the existing studies tab.
+  # Review runs always get a new folder. Production runs reuse the established
+  # folder from analysis/08_pdfs_to_drive.R and never overwrite existing files.
   additional$pdf_drive_link <- NA_character_
   found_paths <- which(additional$pdf_found & !is.na(additional$pdf_path) & file.exists(additional$pdf_path))
   if (length(found_paths) > 0) {
-    folder <- drive_mkdir(paste0("HRP correction review PDFs - ", format(Sys.time(), "%Y-%m-%d %H%M")))
-    folder_id <- as.character(folder$id)
+    if (destination_mode == "review") {
+      folder <- drive_mkdir(paste0("HRP correction review PDFs - ", format(Sys.time(), "%Y-%m-%d %H%M")))
+    } else {
+      parent <- drive_find(pattern = paste0("^", live_pdf_parent_name, "$"), type = "folder")
+      if (nrow(parent) != 1) stop("Could not uniquely find live PDF parent folder: ", live_pdf_parent_name)
+      folder <- drive_ls(parent) |> filter(.data$name == live_pdf_folder_name)
+      if (nrow(folder) != 1) stop("Could not uniquely find live PDF folder: ", live_pdf_folder_name)
+    }
     for (i in found_paths) {
-      uploaded <- drive_upload(additional$pdf_path[[i]], path = as_id(folder_id), name = basename(additional$pdf_path[[i]]), type = "application/pdf")
-      additional$pdf_drive_link[[i]] <- paste0("https://drive.google.com/file/d/", as.character(uploaded$id), "/view")
+      filename <- basename(additional$pdf_path[[i]])
+      uploaded <- drive_ls(folder) |> filter(.data$name == filename)
+      if (nrow(uploaded) == 0) uploaded <- drive_upload(additional$pdf_path[[i]], path = folder, name = filename, type = "application/pdf")
+      drive_share(uploaded, role = "reader", type = "anyone")
+      additional$pdf_drive_link[[i]] <- uploaded$drive_resource[[1]]$webViewLink
     }
   }
-  sheet_write(additional, ss = copied_id, sheet = audit_tab)
+  sheet_write(additional, ss = target_sheet_id, sheet = audit_tab)
 
-  tabs <- sheet_properties(copied_id)$name
+  tabs <- sheet_properties(target_sheet_id)$name
   if ("studies" %in% tabs) {
-    existing <- read_sheet(copied_id, sheet = "studies")
+    existing <- read_sheet(target_sheet_id, sheet = "studies")
     if ("record_index" %in% names(existing)) {
       new_rows <- additional |> filter(!.data$record_index %in% as.character(existing$record_index))
       if (nrow(new_rows) > 0) {
@@ -383,7 +385,7 @@ if (sheet_mode == "copy") {
         for (pdf_column in intersect(c("pdf_link...9", "pdf_link...10"), names(append_rows))) {
           append_rows[[pdf_column]] <- new_rows$pdf_drive_link
         }
-        sheet_append(copied_id, data = append_rows, sheet = "studies")
+        sheet_append(target_sheet_id, data = append_rows, sheet = "studies")
       }
     }
   }
@@ -394,4 +396,4 @@ cat("Gambia:", sum(additional$hrp_correction_country == "Gambia"), "\n")
 cat("Djibouti:", sum(additional$hrp_correction_country == "Djibouti"), "\n")
 cat("PDFs found:", sum(additional$pdf_found), "\n")
 cat("Local review CSV:", local_csv, "\n")
-if (!is.na(review_url)) cat("Review sheet copy:", review_url, "\n")
+if (!is.na(review_url)) cat("Target sheet:", review_url, "\n")
