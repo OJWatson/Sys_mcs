@@ -1,399 +1,161 @@
 # Step 10: HRP-country correction
-# Adds Djibouti and Gambia to the HRP list, then keeps records for which I1 is
-# the only failed rule. Default destination is a review-sheet copy plus a new
-# Drive PDF folder. Set DESTINATION_MODE=live to append to production instead.
+# Add Djibouti and Gambia to the HRP list, enrich the extra inclusions from
+# EndNote, then use the standard OpenAlex/Europe PMC PDF lookup.
 #
-# Review (default): LIVE_SHEET_ID=<id> ENDNOTE_ENL_PATH=<path> Rscript analysis/10_hrp_correction.R
-# Production:       LIVE_SHEET_ID=<id> DESTINATION_MODE=live Rscript analysis/10_hrp_correction.R
+# Default: review copy + new Drive PDF folder
+# Live:    DESTINATION_MODE=live appends to production + uses Retrieved_PDFs
 
 suppressPackageStartupMessages({
   library(dplyr)
   library(readr)
   library(stringr)
-  library(httr2)
-  library(jsonlite)
 })
 
 source("R/endnote_helpers.R")
 source("R/pdf_helpers.R")
 
-`%||%` <- function(x, y) if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
+screening_csv <- Sys.getenv("SCREENING_CSV", "analysis/data-raw/screening_data.csv")
+endnote_path <- Sys.getenv("ENDNOTE_ENL_PATH", "analysis/data-raw/Mortality in Crisis.enl")
+live_sheet_id <- Sys.getenv("LIVE_SHEET_ID", "")
+destination_mode <- tolower(Sys.getenv("DESTINATION_MODE", "review"))
+download_pdfs <- tolower(Sys.getenv("DOWNLOAD_PDFS", "true")) %in% c("true", "1", "yes")
 
-screening_csv <- Sys.getenv("SCREENING_CSV", unset = "analysis/data-raw/screening_data.csv")
-endnote_path <- Sys.getenv("ENDNOTE_ENL_PATH", unset = "analysis/data-raw/Mortality in Crisis.enl")
-live_sheet_id <- Sys.getenv("LIVE_SHEET_ID", unset = "")
-destination_mode <- tolower(Sys.getenv(
-  "DESTINATION_MODE",
-  unset = Sys.getenv("SHEET_MODE", unset = "review") # SHEET_MODE retained for older commands.
-))
-destination_mode <- dplyr::recode(destination_mode, copy = "review")
-if (!destination_mode %in% c("review", "live", "local")) {
-  stop("DESTINATION_MODE must be review (default), live, or local.")
-}
-download_pdfs <- tolower(Sys.getenv("DOWNLOAD_PDFS", unset = "true")) %in% c("true", "1", "yes")
 review_dir <- "analysis/hrp_correction_review"
 pdf_dir <- file.path(review_dir, "pdfs")
-manual_oa_urls_path <- "analysis/data-raw/hrp_correction_manual_oa_urls.csv"
-live_pdf_parent_name <- Sys.getenv("LIVE_PDF_PARENT", unset = "Causes_of_Mortality_Review")
-live_pdf_folder_name <- Sys.getenv("LIVE_PDF_FOLDER", unset = "Retrieved_PDFs")
-
-dir.create(review_dir, recursive = TRUE, showWarnings = FALSE)
+manual_urls_path <- "analysis/data-raw/hrp_correction_manual_oa_urls.csv"
 dir.create(pdf_dir, recursive = TRUE, showWarnings = FALSE)
 
-if (!file.exists(screening_csv)) {
-  stop("Screening CSV not found: ", screening_csv,
-       "\nSet SCREENING_CSV or run the screening-download step first.")
-}
+if (!destination_mode %in% c("review", "live", "local")) stop("DESTINATION_MODE must be review, live, or local.")
+if (!file.exists(screening_csv)) stop("Screening CSV not found: ", screening_csv)
+if (!file.exists(endnote_path)) stop("EndNote library not found: ", endnote_path)
 
-screened <- readr::read_csv(screening_csv, show_col_types = FALSE)
-required <- c("decision", "I1", "I2", "E1", "E2", "E3", "E4")
-missing <- setdiff(required, names(screened))
-if (length(missing) > 0) stop("Missing screening columns: ", paste(missing, collapse = ", "))
+# 1. Identify records which would pass after adding Djibouti/Gambia to HRP ----
+screened <- read_csv(screening_csv, show_col_types = FALSE)
+required <- c("decision", "I1", "I2", "E1", "E2", "E3", "E4", "title", "rec_number", "record_index")
+if (length(setdiff(required, names(screened))) > 0) stop("Screening CSV is missing: ", paste(setdiff(required, names(screened)), collapse = ", "))
 
-# Country evidence is searched across the bibliographic information and the
-# screener's explanation. Keeping this evidence in the output makes the
-# correction auditable later.
-evidence_columns <- intersect(c("title", "abstract", "explanation"), names(screened))
-if (length(evidence_columns) == 0) stop("Expected one of title, abstract, or explanation.")
-evidence_text <- apply(screened[, evidence_columns, drop = FALSE], 1, function(x) paste(x[!is.na(x)], collapse = " "))
-has_gambia <- str_detect(evidence_text, regex("\\bGambia\\b", ignore_case = TRUE))
-has_djibouti <- str_detect(evidence_text, regex("\\bDjibouti\\b", ignore_case = TRUE))
-
+country_text <- apply(screened[, intersect(c("title", "abstract", "explanation"), names(screened)), drop = FALSE], 1, paste, collapse = " ")
 additional <- screened |>
   mutate(
-    .decision = tolower(trimws(as.character(.data$decision))),
-    .I1 = tolower(trimws(as.character(.data$I1))),
-    .I2 = tolower(trimws(as.character(.data$I2))),
-    .E1 = tolower(trimws(as.character(.data$E1))),
-    .E2 = tolower(trimws(as.character(.data$E2))),
-    .E3 = tolower(trimws(as.character(.data$E3))),
-    .E4 = tolower(trimws(as.character(.data$E4))),
     hrp_correction_country = case_when(
-      has_gambia & has_djibouti ~ "Gambia; Djibouti",
-      has_gambia ~ "Gambia",
-      has_djibouti ~ "Djibouti",
+      str_detect(country_text, regex("\\bGambia\\b", TRUE)) & str_detect(country_text, regex("\\bDjibouti\\b", TRUE)) ~ "Gambia; Djibouti",
+      str_detect(country_text, regex("\\bGambia\\b", TRUE)) ~ "Gambia",
+      str_detect(country_text, regex("\\bDjibouti\\b", TRUE)) ~ "Djibouti",
       TRUE ~ NA_character_
-    ),
-    hrp_correction_reason = "I1 would pass after adding Djibouti/Gambia to HRP countries"
+    )
   ) |>
   filter(
-    .decision == "exclude", .I1 == "fail", .I2 == "pass",
-    .E1 == "pass", .E2 == "pass", .E3 == "pass", .E4 == "pass",
-    !is.na(.data$hrp_correction_country)
-  ) |>
-  select(-starts_with("."))
-
-if (nrow(additional) == 0) stop("No additional studies met the HRP-correction rule.")
-
-normalise_title <- function(x) {
-  x |> tolower() |> str_replace_all("[^a-z0-9]", "")
-}
-
-# First use the same EndNote lookup as scripts 02/06. If that library is not
-# present, use an exact title match from OpenAlex as a clearly-labelled fallback.
-additional$doi <- NA_character_
-additional$doi_source <- NA_character_
-if (file.exists(endnote_path) && file.info(endnote_path)$size > 0) {
-  # The screening export preserves the originating EndNote record number in
-  # `rec_number`. Query those exact records directly instead of loading the
-  # whole (835 MB) library merely to enrich a small correction set.
-  requested_ids <- unique(as.character(additional$rec_number))
-  requested_ids <- requested_ids[!is.na(requested_ids) & grepl("^[0-9]+$", requested_ids)]
-  endnote_con <- DBI::dbConnect(RSQLite::SQLite(), endnote_path)
-  on.exit(DBI::dbDisconnect(endnote_con), add = TRUE)
-  if (length(requested_ids) > 0) {
-    id_sql <- paste(requested_ids, collapse = ",")
-    refs <- DBI::dbGetQuery(endnote_con, paste0("SELECT * FROM refs WHERE id IN (", id_sql, ")"))
-  } else {
-    refs <- read_endnote_refs(endnote_path)
-  }
-  refs$id <- as.character(refs$id)
-  # Preserve the complete bibliographic fields held in the full EndNote
-  # library.  These are authoritative for this review and remain useful when
-  # Crossref/OpenAlex cannot resolve a conference abstract or supplement DOI.
-  endnote_metadata <- refs |>
-    transmute(
-      endnote_id = as.character(.data$id),
-      title_key = normalise_title(.data$title),
-      endnote_journal_name = as.character(.data$secondary_title),
-      endnote_year = as.character(.data$year),
-      endnote_url = as.character(.data$url),
-      endnote_accession_number = as.character(.data$accession_number),
-      endnote_notes = as.character(.data$notes),
-      endnote_reference_type = as.character(.data$reference_type)
-    ) |>
-    filter(!is.na(.data$title_key), nzchar(.data$title_key)) |>
-    distinct(.data$title_key, .keep_all = TRUE)
-  doi_lookup <- extract_endnote_dois(refs) |>
-    mutate(title_key = normalise_title(.data$title)) |>
-    filter(!is.na(.data$title_key), nzchar(.data$title_key)) |>
-    distinct(.data$title_key, .keep_all = TRUE)
-  additional <- additional |>
-    mutate(title_key = normalise_title(.data$title)) |>
-    left_join(doi_lookup |> select(title_key, endnote_doi = doi), by = "title_key") |>
-    left_join(endnote_metadata, by = "title_key") |>
-    mutate(
-      doi = .data$endnote_doi,
-      doi_source = if_else(!is.na(.data$endnote_doi), "EndNote title match", NA_character_)
-    ) |>
-    select(-.data$endnote_doi, -.data$title_key)
-}
-
-doi_by_title <- function(title) {
-  if (is.na(title) || !nzchar(trimws(title))) return(NA_character_)
-  query <- utils::URLencode(title, reserved = TRUE)
-  # Crossref is checked first because OpenAlex can be intermittently
-  # unavailable. Both paths accept exact normalized-title matches only.
-  crossref <- get_json_with_retry(paste0("https://api.crossref.org/works?rows=10&query.title=", query))
-  items <- crossref$message$items %||% NULL
-  if (!is.null(items) && is.data.frame(items) && "title" %in% names(items) && "DOI" %in% names(items)) {
-    item_titles <- vapply(items$title, function(x) if (length(x) == 0) "" else x[[1]], character(1))
-    exact <- items[normalise_title(item_titles) == normalise_title(title), , drop = FALSE]
-    if (nrow(exact) > 0 && !is.na(exact$DOI[[1]]) && nzchar(exact$DOI[[1]])) return(tolower(exact$DOI[[1]]))
-  }
-
-  response <- get_json_with_retry(paste0("https://api.openalex.org/works?per-page=10&search=", query))
-  if (is.null(response) || is.null(response$results) || !is.data.frame(response$results) || !"display_name" %in% names(response$results)) return(NA_character_)
-  exact <- response$results[normalise_title(response$results$display_name) == normalise_title(title), , drop = FALSE]
-  if (nrow(exact) == 0 || !"doi" %in% names(exact) || is.na(exact$doi[[1]])) return(NA_character_)
-  sub("^https?://doi.org/", "", tolower(exact$doi[[1]]))
-}
-
-for (i in which(is.na(additional$doi) | !nzchar(additional$doi))) {
-  candidate <- doi_by_title(additional$title[[i]])
-  if (!is.na(candidate)) {
-    additional$doi[[i]] <- candidate
-    additional$doi_source[[i]] <- "OpenAlex/Crossref exact title match"
-  }
-}
-
-# Crossref is also used for journal/year fields and publisher-hosted PDF links.
-# We retain the source URLs in the audit output even if a publisher rejects an
-# automated download, rather than treating absence from OpenAlex as proof that
-# no open-access PDF exists.
-crossref_metadata_by_doi <- function(doi) {
-  empty <- list(journal_name = NA_character_, year = NA_character_, pdf_urls = character(0))
-  if (is.na(doi) || !nzchar(doi)) return(empty)
-  work <- get_json_with_retry(paste0("https://api.crossref.org/works/", utils::URLencode(doi, reserved = TRUE)))
-  message <- work$message %||% NULL
-  if (is.null(message)) return(empty)
-
-  journal <- message$`container-title` %||% message$container_title %||% character(0)
-  journal <- if (length(journal) > 0) as.character(journal[[1]]) else NA_character_
-  year <- NA_character_
-  for (field in c("published-print", "published-online", "issued", "created")) {
-    value <- message[[field]]
-    if (!is.null(value)) {
-      numbers <- unlist(value, use.names = FALSE)
-      candidate <- suppressWarnings(as.integer(numbers[[1]]))
-      if (!is.na(candidate) && candidate > 1000 && candidate < 3000) {
-        year <- as.character(candidate)
-        break
-      }
-    }
-  }
-
-  links <- message$link %||% NULL
-  urls <- character(0)
-  if (is.data.frame(links) && "URL" %in% names(links)) urls <- as.character(links$URL)
-  if (is.list(links) && !is.data.frame(links)) {
-    urls <- unlist(lapply(links, function(x) x$URL %||% x$url %||% character(0)), use.names = FALSE)
-  }
-  list(journal_name = journal, year = year, pdf_urls = unique(urls[!is.na(urls) & nzchar(urls)]))
-}
-
-metadata <- lapply(additional$doi, crossref_metadata_by_doi)
-crossref_journal_name <- vapply(metadata, `[[`, character(1), "journal_name")
-crossref_year <- vapply(metadata, `[[`, character(1), "year")
-# EndNote is the bibliographic source used by this review. Prefer its exact
-# journal/year values, then fall back to Crossref where the library is blank.
-# Keep Crossref's values separately in the audit output for traceability.
-additional$crossref_journal_name <- crossref_journal_name
-additional$crossref_year <- crossref_year
-additional$journal_name <- dplyr::coalesce(additional$endnote_journal_name, crossref_journal_name)
-additional$year <- dplyr::coalesce(additional$endnote_year, crossref_year)
-additional$crossref_pdf_urls <- lapply(metadata, `[[`, "pdf_urls")
-
-query_unpaywall_pdf_urls <- function(doi) {
-  if (is.na(doi) || !nzchar(doi)) return(character(0))
-  email <- Sys.getenv("UNPAYWALL_EMAIL", unset = "oj.watson92@gmail.com")
-  result <- get_json_with_retry(paste0(
-    "https://api.unpaywall.org/v2/", utils::URLencode(doi, reserved = TRUE),
-    "?email=", utils::URLencode(email, reserved = TRUE)
-  ))
-  if (is.null(result)) return(character(0))
-  locations <- result$oa_locations %||% list()
-  urls <- c(result$best_oa_location$url_for_pdf %||% character(0))
-  if (is.data.frame(locations) && "url_for_pdf" %in% names(locations)) urls <- c(urls, locations$url_for_pdf)
-  if (is.list(locations) && !is.data.frame(locations)) {
-    urls <- c(urls, unlist(lapply(locations, function(x) x$url_for_pdf %||% character(0)), use.names = FALSE))
-  }
-  unique(as.character(urls[!is.na(urls) & nzchar(urls)]))
-}
-
-download_candidate_pdf <- function(url, destination) {
-  if (is.na(url) || !nzchar(url)) return(list(found = FALSE, detail = "empty URL"))
-  request <- httr2::request(url) |>
-    httr2::req_user_agent("mortality-crisis-endnote-compendium/0.1") |>
-    httr2::req_headers(Accept = "application/pdf") |>
-    httr2::req_timeout(12)
-  response <- tryCatch(httr2::req_perform(request), error = function(e) e)
-  if (inherits(response, "error")) return(list(found = FALSE, detail = conditionMessage(response)))
-  content_type <- httr2::resp_header(response, "content-type") %||% ""
-  body <- httr2::resp_body_raw(response)
-  is_pdf <- length(body) >= 4 && identical(rawToChar(body[1:4]), "%PDF")
-  if (httr2::resp_status(response) >= 200 && httr2::resp_status(response) < 300 &&
-      (grepl("application/pdf|application/octet-stream", content_type, ignore.case = TRUE) || is_pdf) && is_pdf) {
-    writeBin(body, destination)
-    return(list(found = TRUE, detail = paste0("HTTP ", httr2::resp_status(response))))
-  }
-  list(found = FALSE, detail = paste0("HTTP ", httr2::resp_status(response), "; ", content_type))
-}
-
-record_id <- if ("record_index" %in% names(additional)) as.character(additional$record_index) else as.character(seq_len(nrow(additional)))
-manual_oa_urls <- if (file.exists(manual_oa_urls_path)) {
-  readr::read_csv(manual_oa_urls_path, show_col_types = FALSE) |>
-    mutate(record_index = as.character(.data$record_index))
-} else {
-  data.frame(record_index = character(), pdf_url = character(), pdf_source = character())
-}
-pdf_results <- vector("list", nrow(additional))
-for (i in seq_len(nrow(additional))) {
-  doi <- additional$doi[[i]]
-  destination <- file.path(pdf_dir, paste0(record_id[[i]], ".pdf"))
-  found <- file.exists(destination)
-  manual <- manual_oa_urls[manual_oa_urls$record_index == record_id[[i]], , drop = FALSE]
-  manual_urls <- as.character(manual$pdf_url %||% character(0))
-  publisher_urls <- additional$crossref_pdf_urls[[i]] %||% character(0)
-  endnote_urls <- additional$endnote_url[[i]] %||% character(0)
-  # Already available PDFs are not re-queried or re-downloaded on subsequent
-  # runs. This makes manual additions and incremental retries fast and safe.
-  unpaywall_urls <- if (!found && download_pdfs) query_unpaywall_pdf_urls(doi) else character(0)
-  oa_urls <- if (!found && download_pdfs && !is.na(doi) && nzchar(doi)) unique(c(query_openalex_pdf_urls(doi), query_europepmc_pdf_urls(doi))) else character(0)
-  title_oa_urls <- if (!found && download_pdfs) query_openalex_title_pdf_urls(additional$title[[i]]) else character(0)
-  urls <- unique(c(manual_urls, publisher_urls, unpaywall_urls, oa_urls, title_oa_urls, endnote_urls))
-  used_url <- if (found && length(manual_urls) > 0) manual_urls[[1]] else NA_character_
-  used_source <- if (found && nrow(manual) > 0) as.character(manual$pdf_source[[1]]) else if (found) "already_downloaded" else NA_character_
-  attempted <- character(0)
-  if (download_pdfs && !found) {
-    for (url in urls) {
-      attempt <- download_candidate_pdf(url, destination)
-      attempted <- c(attempted, paste0(url, " [", attempt$detail, "]"))
-      if (attempt$found) {
-        found <- TRUE
-        used_url <- url
-        used_source <- if (url %in% manual_urls) as.character(manual$pdf_source[[which(manual$pdf_url == url)[[1]]]]) else if (url %in% publisher_urls) "Crossref publisher link" else if (url %in% unpaywall_urls) "Unpaywall OA link" else if (url %in% title_oa_urls) "OpenAlex exact-title OA link" else "OpenAlex/Europe PMC"
-        break
-      }
-    }
-  }
-  pdf_results[[i]] <- data.frame(
-    record_index = record_id[[i]], pdf_found = found, pdf_source = used_source,
-    pdf_url = used_url, pdf_path = if (found) destination else NA_character_,
-    pdf_access_status = if (found) "Downloaded" else if (length(urls) > 0) "OA/publisher/EndNote URL found; download needs follow-up" else "No OA/publisher/EndNote PDF URL found",
-    pdf_urls_checked = paste(urls, collapse = " | "), pdf_attempt_log = paste(attempted, collapse = " | "),
-    stringsAsFactors = FALSE
+    tolower(decision) == "exclude", tolower(I1) == "fail", tolower(I2) == "pass",
+    tolower(E1) == "pass", tolower(E2) == "pass", tolower(E3) == "pass", tolower(E4) == "pass",
+    !is.na(hrp_correction_country)
   )
-}
 
-make_study_rows <- function(candidates, sheet_columns) {
-  # sheet_append is positional. Construct all source-sheet columns in the
-  # source order, leaving reviewer fields blank, so no values can shift.
-  rows <- as.data.frame(
-    setNames(replicate(length(sheet_columns), rep(NA_character_, nrow(candidates)), simplify = FALSE), sheet_columns),
-    check.names = FALSE, stringsAsFactors = FALSE
-  )
-  put <- function(column, value) {
-    if (column %in% names(rows)) rows[[column]] <<- as.character(value)
-  }
-  put("record_index", candidates$record_index)
-  put("rec_number", candidates$rec_number)
-  put("title", candidates$title)
-  put("journal_name", candidates$journal_name)
-  put("year", candidates$year)
-  put("abstract", candidates$abstract)
-  put("doi", candidates$doi)
-  put("pdf_found", candidates$pdf_found)
-  put("screening_status", ifelse(candidates$pdf_found, "PDF found – review link", candidates$pdf_access_status))
-  rows
-}
+if (nrow(additional) == 0) stop("No additional studies met the HRP correction rule.")
+
+# 2. Enrich from the original EndNote records ---------------------------------
+con <- DBI::dbConnect(RSQLite::SQLite(), endnote_path)
+on.exit(DBI::dbDisconnect(con), add = TRUE)
+ids <- unique(as.integer(additional$rec_number))
+refs <- DBI::dbGetQuery(con, sprintf("SELECT * FROM refs WHERE id IN (%s)", paste(ids, collapse = ",")))
+refs$id <- as.character(refs$id)
+doi <- extract_endnote_dois(refs) |> select(id, doi)
+
+field <- function(name) if (name %in% names(refs)) as.character(refs[[name]]) else NA_character_
+metadata <- tibble(
+  rec_number = refs$id,
+  journal_name = field("secondary_title"),
+  year = field("year"),
+  endnote_url = field("url"),
+  accession_number = field("accession_number"),
+  reference_type = field("reference_type")
+) |>
+  left_join(doi, by = c("rec_number" = "id"))
 
 additional <- additional |>
-  mutate(record_index = record_id) |>
-  left_join(bind_rows(pdf_results), by = "record_index")
+  mutate(rec_number = as.character(rec_number), record_index = as.character(record_index)) |>
+  select(-any_of(c("doi", "journal_name", "year"))) |>
+  left_join(metadata, by = "rec_number")
 
-local_csv <- file.path(review_dir, "additional_hrp_correction_studies.csv")
-local_rds <- file.path(review_dir, "additional_hrp_correction_studies.rds")
-write_csv(additional, local_csv)
-saveRDS(additional, local_rds)
+# 3. Use the same OA sources as analysis/06_fetch_pdfs_full_endnote.R --------
+manual_urls <- if (file.exists(manual_urls_path)) {
+  read_csv(manual_urls_path, show_col_types = FALSE) |>
+    transmute(record_index = as.character(record_index), manual_url = pdf_url, manual_source = pdf_source)
+} else tibble(record_index = character(), manual_url = character(), manual_source = character())
 
-# Google destinations ---------------------------------------------------------
-# review: copy source sheet + create a new PDF folder (default)
-# live:   append source sheet + use Causes_of_Mortality_Review/Retrieved_PDFs
-review_url <- NA_character_
+pdf_results <- lapply(seq_len(nrow(additional)), function(i) {
+  record_id <- additional$record_index[[i]]
+  pdf_path <- file.path(pdf_dir, paste0(record_id, ".pdf"))
+  manual <- filter(manual_urls, record_index == record_id)
+  urls <- c(manual$manual_url, query_openalex_pdf_urls(additional$doi[[i]]), query_europepmc_pdf_urls(additional$doi[[i]]))
+  urls <- unique(urls[!is.na(urls) & nzchar(urls)])
+  found <- file.exists(pdf_path)
+  used_url <- if (found && nrow(manual) > 0) manual$manual_url[[1]] else NA_character_
+  source <- if (found && nrow(manual) > 0) manual$manual_source[[1]] else if (found) "already_downloaded" else NA_character_
+
+  if (!found && download_pdfs) for (url in urls) {
+    if (download_pdf_with_retry(url, pdf_path)) {
+      found <- TRUE
+      used_url <- url
+      source <- if (url %in% manual$manual_url) manual$manual_source[[match(url, manual$manual_url)]] else "OpenAlex/Europe PMC"
+      break
+    }
+  }
+  tibble(record_index = record_id, pdf_found = found, pdf_source = source, pdf_url = used_url,
+         pdf_path = if (found) pdf_path else NA_character_)
+}) |> bind_rows()
+
+additional <- left_join(additional, pdf_results, by = "record_index")
+write_csv(additional, file.path(review_dir, "additional_hrp_correction_studies.csv"))
+saveRDS(additional, file.path(review_dir, "additional_hrp_correction_studies.rds"))
+
+# 4. Write locally, to a review copy (default), or to production --------------
 if (destination_mode != "local") {
   if (!nzchar(live_sheet_id)) stop("LIVE_SHEET_ID is required unless DESTINATION_MODE=local.")
   suppressPackageStartupMessages({ library(googledrive); library(googlesheets4) })
-  drive_auth()
-  gs4_auth()
-  target_sheet_id <- live_sheet_id
+  drive_auth(); gs4_auth()
+
+  target_id <- live_sheet_id
   if (destination_mode == "review") {
     copy_name <- paste0("HRP correction review - ", format(Sys.time(), "%Y-%m-%d %H%M"))
     copied <- tryCatch(drive_cp(as_id(live_sheet_id), name = copy_name), error = function(e) NULL)
     if (is.null(copied)) {
-      source_tabs <- sheet_properties(live_sheet_id)$name
-      source_values <- lapply(source_tabs, function(tab) read_sheet(live_sheet_id, sheet = tab))
-      names(source_values) <- source_tabs
-      copied <- gs4_create(name = copy_name, sheets = source_values)
+      tabs <- sheet_properties(live_sheet_id)$name
+      copied <- gs4_create(copy_name, sheets = setNames(lapply(tabs, function(tab) read_sheet(live_sheet_id, sheet = tab)), tabs))
     }
-    target_sheet_id <- if (is.atomic(copied) && length(copied) == 1) as.character(copied) else as.character(copied$id)
+    target_id <- as.character(copied$id)
   }
-  review_url <- paste0("https://docs.google.com/spreadsheets/d/", target_sheet_id)
+
   audit_tab <- "HRP correction candidates"
-  if (!audit_tab %in% sheet_properties(target_sheet_id)$name) sheet_add(target_sheet_id, audit_tab)
+  if (!audit_tab %in% sheet_properties(target_id)$name) sheet_add(target_id, audit_tab)
+  sheet_write(additional, target_id, sheet = audit_tab)
 
-  # Review runs always get a new folder. Production runs reuse the established
-  # folder from analysis/08_pdfs_to_drive.R and never overwrite existing files.
-  additional$pdf_drive_link <- NA_character_
-  found_paths <- which(additional$pdf_found & !is.na(additional$pdf_path) & file.exists(additional$pdf_path))
-  if (length(found_paths) > 0) {
-    if (destination_mode == "review") {
-      folder <- drive_mkdir(paste0("HRP correction review PDFs - ", format(Sys.time(), "%Y-%m-%d %H%M")))
+  found <- filter(additional, pdf_found, !is.na(pdf_path), file.exists(pdf_path))
+  if (nrow(found) > 0) {
+    folder <- if (destination_mode == "review") {
+      drive_mkdir(paste0("HRP correction review PDFs - ", format(Sys.time(), "%Y-%m-%d %H%M")))
     } else {
-      parent <- drive_find(pattern = paste0("^", live_pdf_parent_name, "$"), type = "folder")
-      if (nrow(parent) != 1) stop("Could not uniquely find live PDF parent folder: ", live_pdf_parent_name)
-      folder <- drive_ls(parent) |> filter(.data$name == live_pdf_folder_name)
-      if (nrow(folder) != 1) stop("Could not uniquely find live PDF folder: ", live_pdf_folder_name)
+      parent <- drive_find(pattern = "^Causes_of_Mortality_Review$", type = "folder")
+      drive_ls(parent) |> filter(name == "Retrieved_PDFs")
     }
-    for (i in found_paths) {
-      filename <- basename(additional$pdf_path[[i]])
-      uploaded <- drive_ls(folder) |> filter(.data$name == filename)
-      if (nrow(uploaded) == 0) uploaded <- drive_upload(additional$pdf_path[[i]], path = folder, name = filename, type = "application/pdf")
-      drive_share(uploaded, role = "reader", type = "anyone")
-      additional$pdf_drive_link[[i]] <- uploaded$drive_resource[[1]]$webViewLink
-    }
+    found$pdf_drive_link <- vapply(found$pdf_path, function(path) {
+      upload <- drive_upload(path, path = folder, name = basename(path), type = "application/pdf")
+      drive_share(upload, role = "reader", type = "anyone")
+      upload$drive_resource[[1]]$webViewLink
+    }, character(1))
+    additional <- left_join(additional, found |> select(record_index, pdf_drive_link), by = "record_index")
   }
-  sheet_write(additional, ss = target_sheet_id, sheet = audit_tab)
 
-  tabs <- sheet_properties(target_sheet_id)$name
-  if ("studies" %in% tabs) {
-    existing <- read_sheet(target_sheet_id, sheet = "studies")
-    if ("record_index" %in% names(existing)) {
-      new_rows <- additional |> filter(!.data$record_index %in% as.character(existing$record_index))
-      if (nrow(new_rows) > 0) {
-        append_rows <- make_study_rows(new_rows, names(existing))
-        for (pdf_column in intersect(c("pdf_link...9", "pdf_link...10"), names(append_rows))) {
-          append_rows[[pdf_column]] <- new_rows$pdf_drive_link
-        }
-        sheet_append(target_sheet_id, data = append_rows, sheet = "studies")
-      }
-    }
+  # sheet_append is positional: build empty rows in the source column order.
+  studies <- read_sheet(target_id, sheet = "studies")
+  new <- filter(additional, !record_index %in% as.character(studies$record_index))
+  if (nrow(new) > 0) {
+    rows <- as.data.frame(setNames(replicate(ncol(studies), rep(NA_character_, nrow(new)), simplify = FALSE), names(studies)))
+    for (name in intersect(names(rows), names(new))) rows[[name]] <- as.character(new[[name]])
+    for (name in intersect(c("pdf_link...9", "pdf_link...10"), names(rows))) rows[[name]] <- new$pdf_drive_link
+    sheet_append(target_id, rows, sheet = "studies")
   }
+  cat("Target sheet: https://docs.google.com/spreadsheets/d/", target_id, "\n", sep = "")
 }
 
 cat("Additional studies:", nrow(additional), "\n")
-cat("Gambia:", sum(additional$hrp_correction_country == "Gambia"), "\n")
-cat("Djibouti:", sum(additional$hrp_correction_country == "Djibouti"), "\n")
 cat("PDFs found:", sum(additional$pdf_found), "\n")
-cat("Local review CSV:", local_csv, "\n")
-if (!is.na(review_url)) cat("Target sheet:", review_url, "\n")
