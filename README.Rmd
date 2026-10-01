@@ -29,9 +29,22 @@ To install `pkgtmp`:
 remotes::install_github("OJWatson/pkgtmp", upgrade = FALSE)
 ```
 
+## No-DOI PDF recovery
+
+The agent-identified PDF handoff is documented in
+`data-raw/agent_identified_pdf_manifest.csv`. Run the local validation/report
+step without Google Drive access:
+
+```bash
+Rscript data-raw/fetch_agent_identified_pdfs.R --dry-run
+```
+
+To download staged PDFs, provide `SYS_MCS_AGENT_PDF_SOURCE_FOLDER_ID` or
+`SYS_MCS_AGENT_PDF_SOURCE_FOLDER_NAME` and run with `--run`. Syncing to a review
+Drive folder is off unless `SYS_MCS_AGENT_PDF_ALLOW_DEST_UPLOAD=true` is set.
+
 ### Licenses
 
 Code: [MIT](http://opensource.org/licenses/MIT) year: `r format(Sys.Date(), "%Y")`, copyright holder: OJ Watson
 
 Data: [CC-0](http://creativecommons.org/publicdomain/zero/1.0/) attribution requested in reuse
-
