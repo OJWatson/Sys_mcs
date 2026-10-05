@@ -8,3 +8,9 @@ archive/data-raw/
 analysis/data-raw/
 analysis/pdf_download/
 analysis/hrp_correction_review/
+analysis/audit_*/
+analysis/pdf_validation_*/
+analysis/recovery_runs/
+work/
+__pycache__/
+*.pyc

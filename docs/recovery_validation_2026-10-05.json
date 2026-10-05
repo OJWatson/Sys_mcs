@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-05",
+  "disposable_spreadsheet_id": "1mztqUJjHSa2vM5tsiIFdAuoPQ2sGGS00kKCp9ssvYcM",
+  "disposable_folder_id": "1fERDJM-7nwYgNvi-_VCSDDgrGQn7Gvnu",
+  "existing_rows_including_header_checked": 4347,
+  "existing_cell_metadata_checked": 121716,
+  "existing_records_updated": 2,
+  "existing_cells_updated": 8,
+  "country_rows_appended": 3,
+  "country_pdf_found": 2,
+  "country_pdf_missing": 1,
+  "absent_no_doi_records_not_appended": 1,
+  "drive_pdfs_copied": 5,
+  "batch_requests": 15,
+  "values_match_exact_plan": true,
+  "existing_metadata_preserved": true,
+  "expected_google_added_pdf_hyperlinks": [
+    "3:9",
+    "4:9"
+  ],
+  "existing_unplanned_values_preserved": true,
+  "new_reviewer_fields_blank": true,
+  "new_rows_have_no_inherited_pdf_hyperlink": true,
+  "duplicate_record_ids": 0,
+  "limitations": [
+    "Google connector executed requests produced by R; R OAuth adapter not run against Google.",
+    "Remote connector does not expose MD5; copy integration uses reviewed local checksum fixtures. R remote MD5 handling has separate mocked tests."
+  ],
+  "production_changed": false,
+  "rerun_validation": {
+    "date": "2026-10-05",
+    "r_plan_aware_real_google_readback_validated": true,
+    "no_doi_rerun": {
+      "records": 3,
+      "copies": 0,
+      "reused": 3,
+      "existing_records_updated": 0,
+      "cells_updated": 0,
+      "rows_appended": 0,
+      "absent_exceptions": 1
+    },
+    "country_rerun": {
+      "records": 3,
+      "copies": 0,
+      "reused": 2,
+      "existing_records_updated": 0,
+      "cells_updated": 0,
+      "rows_appended": 0,
+      "absent_exceptions": 0
+    },
+    "persistent_absent_exception": "58522",
+    "production_touched": false,
+    "scope": "Offline R verification of actual disposable Google connector before/after state; no remote calls in this validation."
+  },
+  "local_regression_assertions": {
+    "engine": 52,
+    "independent_review": 36,
+    "cli_and_manifests": 15,
+    "mocked_google_api": 14,
+    "total": 117
+  },
+  "final_manifest_counts": {
+    "country_rows": 9,
+    "country_found": 6,
+    "country_missing": 3,
+    "no_doi_verified": 354,
+    "no_doi_held": 41,
+    "no_doi_matched_updates": 336,
+    "no_doi_verified_absent": 18,
+    "no_doi_held_matched": 37,
+    "no_doi_held_absent": 4,
+    "historical_unresolved": 126
+  },
+  "full_offline_plans": {
+    "country": {
+      "records": 9,
+      "copies": 6,
+      "reused": 0,
+      "existing_records_updated": 0,
+      "cells_updated": 0,
+      "rows_appended": 9,
+      "absent_exceptions": 0
+    },
+    "no_doi": {
+      "records": 354,
+      "copies": 354,
+      "reused": 0,
+      "existing_records_updated": 336,
+      "cells_updated": 1344,
+      "rows_appended": 0,
+      "absent_exceptions": 18
+    }
+  },
+  "full_offline_plan_limitation": "Production-derived disposable-sheet snapshot, complete metadata and empty disposable-destination fixture; actual destination reuse must be rechecked by runtime.",
+  "pdf_hash_validation": {
+    "inventory_records": 395,
+    "distinct_source_files": 388,
+    "passed": true,
+    "program_only_listings_verified": 0
+  },
+  "test_folder_state": "Five PDFs and one private disposable spreadsheet retained for inspection; no sharing changes.",
+  "manifest_sha256": {
+    "data-raw/hrp_country_correction_records.csv": "cb79a80d51e17afc88f6c8daf24a16345dc9cebe39713ddea6fae38b82a82600",
+    "data-raw/hrp_country_correction_review.csv": "86b7f1c3bb5026ccfe9d20bd25d696a02d51ffb4492036c65115b698446a503d",
+    "data-raw/recovered_pdf_inventory.csv": "7b6d2a3628b8de3c81a4295c9f1611a3cd836233bffba4ee0e1342c8ab87e670",
+    "data-raw/recovered_pdf_identity_reviews.csv": "2c3de27707fa84a71012d6d35719b3fe20621a16f25878b9f51f78093e052175",
+    "data-raw/recovery_absent_records_review.csv": "5b3b23708168072219941e1552ad6b80ca2f78f35ab0559bcd096ef25b1c2648",
+    "data-raw/unresolved_pdf_follow_up.csv": "3f3f4f5e505189f3e594430fe755c7d07c491b6e8ecc72cf9fc4d727fc1f0e3e"
+  }
+}
